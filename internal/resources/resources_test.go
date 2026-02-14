@@ -688,8 +688,8 @@ func TestBuildStatefulSet_ConfigVolume_RawConfig(t *testing.T) {
 
 	// Init container should copy config from ConfigMap to data volume
 	initContainers := sts.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 1 {
-		t.Fatalf("expected 1 init container, got %d", len(initContainers))
+	if len(initContainers) != 2 {
+		t.Fatalf("expected 2 init containers, got %d", len(initContainers))
 	}
 	initC := initContainers[0]
 	if initC.Name != "init-config" {
@@ -723,8 +723,8 @@ func TestBuildStatefulSet_ConfigVolume_ConfigMapRef(t *testing.T) {
 
 	// Init container should copy the custom key from ConfigMap to data volume
 	initContainers := sts.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 1 {
-		t.Fatalf("expected 1 init container, got %d", len(initContainers))
+	if len(initContainers) != 2 {
+		t.Fatalf("expected 2 init containers, got %d", len(initContainers))
 	}
 	initC := initContainers[0]
 	assertVolumeMount(t, initC.VolumeMounts, "data", "/data")
@@ -758,8 +758,8 @@ func TestBuildStatefulSet_ConfigMapRef_DefaultKey(t *testing.T) {
 
 	// Init container should use default key "openclaw.json"
 	initContainers := sts.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 1 {
-		t.Fatalf("expected 1 init container, got %d", len(initContainers))
+	if len(initContainers) != 2 {
+		t.Fatalf("expected 2 init containers, got %d", len(initContainers))
 	}
 	expectedCmd := "cp /config/openclaw.json /data/openclaw.json"
 	if initContainers[0].Command[2] != expectedCmd {
@@ -778,8 +778,8 @@ func TestBuildStatefulSet_ConfigVolume_SecretRef(t *testing.T) {
 
 	// Init container should copy the custom key from Secret to data volume
 	initContainers := sts.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 1 {
-		t.Fatalf("expected 1 init container, got %d", len(initContainers))
+	if len(initContainers) != 2 {
+		t.Fatalf("expected 2 init containers, got %d", len(initContainers))
 	}
 	initC := initContainers[0]
 	assertVolumeMount(t, initC.VolumeMounts, "data", "/data")
@@ -815,12 +815,15 @@ func TestBuildStatefulSet_SecretRef_DefaultKey(t *testing.T) {
 	sts := BuildStatefulSet(instance)
 
 	initContainers := sts.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 1 {
-		t.Fatalf("expected 1 init container, got %d", len(initContainers))
+	if len(initContainers) != 2 {
+		t.Fatalf("expected 2 init containers (config + skills), got %d", len(initContainers))
 	}
 	expectedCmd := "cp /config/openclaw.json /data/openclaw.json"
 	if initContainers[0].Command[2] != expectedCmd {
 		t.Errorf("init container command = %q, want %q", initContainers[0].Command[2], expectedCmd)
+	}
+	if initContainers[1].Name != "init-skills" {
+		t.Errorf("second init container name = %q, want init-skills", initContainers[1].Name)
 	}
 }
 
@@ -849,14 +852,18 @@ func TestBuildStatefulSet_SecretRef_TakesPriority(t *testing.T) {
 	}
 }
 
-func TestBuildStatefulSet_NoConfig_NoInitContainer(t *testing.T) {
+func TestBuildStatefulSet_NoConfig_SkillsInitOnly(t *testing.T) {
 	instance := newTestInstance("no-config")
 	// No config set at all
 
 	sts := BuildStatefulSet(instance)
 
-	if len(sts.Spec.Template.Spec.InitContainers) != 0 {
-		t.Errorf("expected 0 init containers when no config, got %d", len(sts.Spec.Template.Spec.InitContainers))
+	initContainers := sts.Spec.Template.Spec.InitContainers
+	if len(initContainers) != 1 {
+		t.Fatalf("expected 1 init container (skills only) when no config, got %d", len(initContainers))
+	}
+	if initContainers[0].Name != "init-skills" {
+		t.Errorf("init container name = %q, want init-skills", initContainers[0].Name)
 	}
 }
 

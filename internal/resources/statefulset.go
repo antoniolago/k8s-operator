@@ -265,6 +265,11 @@ func buildMainContainer(instance *openclawv1alpha1.OpenClawInstance) corev1.Cont
 				Name:      "data",
 				MountPath: "/home/openclaw/.openclaw",
 			},
+			{
+				Name:      "data",
+				MountPath: "/app/skills",
+				SubPath:   "skills",
+			},
 		},
 	}
 
@@ -296,27 +301,21 @@ func buildMainEnv(instance *openclawv1alpha1.OpenClawInstance) []corev1.EnvVar {
 // files into the data volume. Config is always overwritten (operator-managed),
 // while workspace files use seed-once semantics (only copied if not present).
 func buildInitContainers(instance *openclawv1alpha1.OpenClawInstance) []corev1.Container {
-	script := BuildInitScript(instance)
-	if script == "" {
-		return nil
-	}
+	var initContainers []corev1.Container
 
-	mounts := []corev1.VolumeMount{
-		{Name: "data", MountPath: "/data"},
-	}
+	// Config/workspace init container (only if there's something to do)
+	if script := BuildInitScript(instance); script != "" {
+		mounts := []corev1.VolumeMount{
+			{Name: "data", MountPath: "/data"},
+		}
+		if configSourceKey(instance) != "" {
+			mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/config"})
+		}
+		if hasWorkspaceFiles(instance) {
+			mounts = append(mounts, corev1.VolumeMount{Name: "workspace-init", MountPath: "/workspace-init", ReadOnly: true})
+		}
 
-	// Config volume mount (only if config exists)
-	if configSourceKey(instance) != "" {
-		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/config"})
-	}
-
-	// Workspace volume mount (only if workspace files exist)
-	if hasWorkspaceFiles(instance) {
-		mounts = append(mounts, corev1.VolumeMount{Name: "workspace-init", MountPath: "/workspace-init", ReadOnly: true})
-	}
-
-	return []corev1.Container{
-		{
+		initContainers = append(initContainers, corev1.Container{
 			Name:                     "init-config",
 			Image:                    "busybox:1.37",
 			Command:                  []string{"sh", "-c", script},
@@ -325,8 +324,35 @@ func buildInitContainers(instance *openclawv1alpha1.OpenClawInstance) []corev1.C
 			TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 			SecurityContext:          buildInitSecurityContext(instance),
 			VolumeMounts:             mounts,
-		},
+		})
 	}
+
+	// Seed bundled skills from the OpenClaw image into the PVC on first boot.
+	// Uses the same image as the main container so we get the correct bundled skills.
+	// Only copies if the skills directory is empty (seed-once semantics).
+	initContainers = append(initContainers, corev1.Container{
+		Name:            "init-skills",
+		Image:           GetImage(instance),
+		ImagePullPolicy: getPullPolicy(instance),
+		Command: []string{"sh", "-c",
+			`if [ -z "$(ls -A /data/skills 2>/dev/null)" ]; then
+  echo "Seeding bundled skills into persistent volume..."
+  mkdir -p /data/skills
+  cp -a /app/skills/. /data/skills/
+  echo "Done seeding skills."
+else
+  echo "Skills directory already populated, skipping seed."
+fi`,
+		},
+		TerminationMessagePath:   corev1.TerminationMessagePathDefault,
+		TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+		SecurityContext:          buildInitSecurityContext(instance),
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "data", MountPath: "/data"},
+		},
+	})
+
+	return initContainers
 }
 
 // BuildInitScript generates the shell script for the init container.

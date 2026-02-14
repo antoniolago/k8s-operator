@@ -283,8 +283,16 @@ func buildMainContainer(instance *openclawv1alpha1.OpenClawInstance) corev1.Cont
 
 // buildMainEnv creates the environment variables for the main container
 func buildMainEnv(instance *openclawv1alpha1.OpenClawInstance) []corev1.EnvVar {
+	// Persistent tool prefix: npm/pip global installs go to the PVC so they
+	// survive pod restarts.  The bin dir is prepended to PATH.
+	toolPrefix := "/home/openclaw/.openclaw/tools"
+	toolBin := toolPrefix + "/bin"
+
 	env := []corev1.EnvVar{
 		{Name: "HOME", Value: "/home/openclaw"},
+		{Name: "NPM_CONFIG_PREFIX", Value: toolPrefix},
+		{Name: "PIP_TARGET", Value: toolPrefix + "/pip"},
+		{Name: "PATH", Value: toolBin + ":" + toolPrefix + "/pip/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 	}
 
 	if instance.Spec.Chromium.Enabled {

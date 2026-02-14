@@ -986,8 +986,23 @@ func TestBuildStatefulSet_EnvAndEnvFrom(t *testing.T) {
 	sts := BuildStatefulSet(instance)
 	main := sts.Spec.Template.Spec.Containers[0]
 
-	if len(main.Env) != 2 || main.Env[0].Name != "HOME" || main.Env[1].Name != "MY_VAR" {
-		t.Error("env vars should include HOME followed by user-defined vars")
+	// Operator injects HOME, NPM_CONFIG_PREFIX, PIP_TARGET, PATH before user vars
+	foundHome := false
+	foundUserVar := false
+	for _, e := range main.Env {
+		if e.Name == "HOME" {
+			foundHome = true
+		}
+		if e.Name == "MY_VAR" && e.Value == "my-value" {
+			foundUserVar = true
+		}
+	}
+	if !foundHome || !foundUserVar {
+		t.Errorf("env vars should include HOME and user-defined vars, got %v", main.Env)
+	}
+	// User var must be last
+	if main.Env[len(main.Env)-1].Name != "MY_VAR" {
+		t.Error("user-defined env vars should be appended after operator vars")
 	}
 	if len(main.EnvFrom) != 1 || main.EnvFrom[0].SecretRef.Name != "api-keys" {
 		t.Error("envFrom not passed through")

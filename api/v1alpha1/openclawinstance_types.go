@@ -107,10 +107,28 @@ type ConfigSpec struct {
 	// +optional
 	ConfigMapRef *ConfigMapKeySelector `json:"configMapRef,omitempty"`
 
-	// Raw is inline openclaw.json configuration (used if ConfigMapRef is not set)
+	// SecretRef references a Secret containing the openclaw.json configuration.
+	// Use this instead of ConfigMapRef when the config contains sensitive data.
+	// Note: when using SecretRef the operator cannot enrich the config automatically
+	// (e.g. gateway.bind), so you must include "gateway": {"bind": "lan"} yourself.
+	// +optional
+	SecretRef *SecretKeySelector `json:"secretRef,omitempty"`
+
+	// Raw is inline openclaw.json configuration (used if ConfigMapRef and SecretRef are not set)
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	Raw *RawConfig `json:"raw,omitempty"`
+}
+
+// SecretKeySelector selects a key from a Secret
+type SecretKeySelector struct {
+	// Name of the Secret
+	Name string `json:"name"`
+
+	// Key in the Secret to use
+	// +kubebuilder:default="openclaw.json"
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // ConfigMapKeySelector selects a key from a ConfigMap
@@ -171,6 +189,12 @@ type ResourceList struct {
 
 // SecuritySpec defines security-related configuration
 type SecuritySpec struct {
+	// RunAsRoot runs the container as root (UID 0). This is required when
+	// using OpenClaw's built-in store to install system packages.
+	// When true, sets runAsUser=0, runAsGroup=0, fsGroup=0, runAsNonRoot=false.
+	// +optional
+	RunAsRoot bool `json:"runAsRoot,omitempty"`
+
 	// PodSecurityContext holds pod-level security attributes
 	// +optional
 	PodSecurityContext *PodSecurityContextSpec `json:"podSecurityContext,omitempty"`
@@ -189,40 +213,45 @@ type SecuritySpec struct {
 }
 
 // PodSecurityContextSpec defines pod-level security context
+// Defaults (runAsUser=1000, runAsGroup=1000, fsGroup=1000, runAsNonRoot=true)
+// are applied in Go code, not via CRD defaults, to allow zero-value overrides.
 type PodSecurityContextSpec struct {
 	// RunAsUser is the UID to run the entrypoint of the container process
-	// +kubebuilder:default=1000
 	// +optional
 	RunAsUser *int64 `json:"runAsUser,omitempty"`
 
 	// RunAsGroup is the GID to run the entrypoint of the container process
-	// +kubebuilder:default=1000
 	// +optional
 	RunAsGroup *int64 `json:"runAsGroup,omitempty"`
 
 	// FSGroup is a special supplemental group that applies to all containers
-	// +kubebuilder:default=1000
 	// +optional
 	FSGroup *int64 `json:"fsGroup,omitempty"`
 
 	// RunAsNonRoot indicates that the container must run as a non-root user
-	// +kubebuilder:default=true
 	// +optional
 	RunAsNonRoot *bool `json:"runAsNonRoot,omitempty"`
 }
 
 // ContainerSecurityContextSpec defines container-level security context
+// Defaults are applied in Go code, not via CRD defaults, to allow zero-value overrides.
 type ContainerSecurityContextSpec struct {
 	// AllowPrivilegeEscalation controls whether a process can gain more privileges
-	// +kubebuilder:default=false
 	// +optional
 	AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation,omitempty"`
 
 	// ReadOnlyRootFilesystem mounts the container's root filesystem as read-only
 	// Note: OpenClaw requires write access to ~/.openclaw/, so this is false by default
-	// +kubebuilder:default=false
 	// +optional
 	ReadOnlyRootFilesystem *bool `json:"readOnlyRootFilesystem,omitempty"`
+
+	// RunAsNonRoot indicates that the container must run as a non-root user
+	// +optional
+	RunAsNonRoot *bool `json:"runAsNonRoot,omitempty"`
+
+	// RunAsUser is the UID to run the entrypoint of the container process
+	// +optional
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
 
 	// Capabilities to add/drop
 	// +optional

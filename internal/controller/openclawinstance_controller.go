@@ -380,7 +380,12 @@ func (r *OpenClawInstanceReconciler) reconcileNetworkPolicy(ctx context.Context,
 
 // reconcileConfigMap reconciles the ConfigMap for openclaw.json
 func (r *OpenClawInstanceReconciler) reconcileConfigMap(ctx context.Context, instance *openclawv1alpha1.OpenClawInstance) error {
-	// Only create ConfigMap if using raw config (not referencing external ConfigMap)
+	// Only create ConfigMap if using raw config (not referencing external ConfigMap or Secret)
+	if instance.Spec.Config.SecretRef != nil {
+		// Using external Secret, nothing to create
+		instance.Status.ManagedResources.ConfigMap = ""
+		return nil
+	}
 	if instance.Spec.Config.ConfigMapRef != nil {
 		// Using external ConfigMap, nothing to create
 		instance.Status.ManagedResources.ConfigMap = ""

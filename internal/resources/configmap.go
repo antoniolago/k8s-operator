@@ -38,7 +38,14 @@ func BuildConfigMap(instance *openclawv1alpha1.OpenClawInstance) *corev1.ConfigM
 		if enriched, err := enrichConfigWithModules(configBytes); err == nil {
 			configBytes = enriched
 		}
+		// Ensure gateway binds to all interfaces so K8s Services can reach it.
+		if enriched, err := ensureGatewayLanBind(configBytes); err == nil {
+			configBytes = enriched
+		}
 		configContent = string(configBytes)
+	} else {
+		// No raw config provided — still need gateway.bind for networking
+		configContent = `{"gateway":{"bind":"lan"}}`
 	}
 
 	// Try to pretty-print the JSON
@@ -126,5 +133,41 @@ func enrichConfigWithModules(configJSON []byte) ([]byte, error) {
 	}
 
 	config["modules"] = modules
+	return json.Marshal(config)
+}
+
+// ensureGatewayLanBind sets gateway.bind to "lan" so the process listens on
+// 0.0.0.0. It also disables Control UI device-pairing because in Kubernetes
+// the gateway is never accessed from localhost, which means the normal
+// silent auto-approve path never fires. Token auth already protects the
+// connection. User-provided values are preserved.
+func ensureGatewayLanBind(configJSON []byte) ([]byte, error) {
+	var config map[string]interface{}
+	if err := json.Unmarshal(configJSON, &config); err != nil {
+		return configJSON, nil
+	}
+
+	gw, ok := config["gateway"].(map[string]interface{})
+	if !ok {
+		gw = make(map[string]interface{})
+		config["gateway"] = gw
+	}
+
+	if _, exists := gw["bind"]; !exists {
+		gw["bind"] = "lan"
+	}
+
+	// Disable device-pairing for the Control UI — in K8s the gateway is
+	// always behind a Service/Ingress so connections are never "local".
+	// Token auth is still enforced.
+	controlUi, ok := gw["controlUi"].(map[string]interface{})
+	if !ok {
+		controlUi = make(map[string]interface{})
+		gw["controlUi"] = controlUi
+	}
+	if _, exists := controlUi["dangerouslyDisableDeviceAuth"]; !exists {
+		controlUi["dangerouslyDisableDeviceAuth"] = true
+	}
+
 	return json.Marshal(config)
 }

@@ -28,7 +28,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	openclawv1alpha1 "github.com/openclawrocks/k8s-operator/api/v1alpha1"
 )
@@ -101,6 +100,15 @@ func buildPodSecurityContext(instance *openclawv1alpha1.OpenClawInstance) *corev
 		},
 	}
 
+	// RunAsRoot shortcut: run everything as UID 0
+	if instance.Spec.Security.RunAsRoot {
+		psc.RunAsUser = Ptr(int64(0))
+		psc.RunAsGroup = Ptr(int64(0))
+		psc.FSGroup = Ptr(int64(0))
+		psc.RunAsNonRoot = Ptr(false)
+		return psc
+	}
+
 	// Apply user overrides or defaults
 	spec := instance.Spec.Security.PodSecurityContext
 	if spec != nil {
@@ -145,6 +153,15 @@ func buildContainerSecurityContext(instance *openclawv1alpha1.OpenClawInstance) 
 		},
 	}
 
+	// RunAsRoot shortcut: remove capability restrictions so the container
+	// can install packages, switch users, etc.
+	if instance.Spec.Security.RunAsRoot {
+		sc.RunAsNonRoot = Ptr(false)
+		sc.RunAsUser = Ptr(int64(0))
+		sc.Capabilities = &corev1.Capabilities{} // don't drop ALL
+		return sc
+	}
+
 	// Apply user overrides
 	spec := instance.Spec.Security.ContainerSecurityContext
 	if spec != nil {
@@ -154,8 +171,48 @@ func buildContainerSecurityContext(instance *openclawv1alpha1.OpenClawInstance) 
 		if spec.ReadOnlyRootFilesystem != nil {
 			sc.ReadOnlyRootFilesystem = spec.ReadOnlyRootFilesystem
 		}
+		if spec.RunAsNonRoot != nil {
+			sc.RunAsNonRoot = spec.RunAsNonRoot
+		}
+		if spec.RunAsUser != nil {
+			sc.RunAsUser = spec.RunAsUser
+		}
 		if spec.Capabilities != nil {
 			sc.Capabilities = spec.Capabilities
+		}
+	}
+
+	return sc
+}
+
+// buildInitSecurityContext creates the security context for init containers.
+// It inherits runAsNonRoot/runAsUser from the pod-level overrides so that init
+// containers don't conflict when the user runs as root.
+func buildInitSecurityContext(instance *openclawv1alpha1.OpenClawInstance) *corev1.SecurityContext {
+	sc := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: Ptr(false),
+		ReadOnlyRootFilesystem:   Ptr(true),
+		RunAsNonRoot:             Ptr(true),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+
+	// RunAsRoot shortcut
+	if instance.Spec.Security.RunAsRoot {
+		sc.RunAsNonRoot = Ptr(false)
+		sc.RunAsUser = Ptr(int64(0))
+		return sc
+	}
+
+	// Inherit user overrides from pod/container security context
+	spec := instance.Spec.Security.ContainerSecurityContext
+	if spec != nil {
+		if spec.RunAsNonRoot != nil {
+			sc.RunAsNonRoot = spec.RunAsNonRoot
+		}
+		if spec.RunAsUser != nil {
+			sc.RunAsUser = spec.RunAsUser
 		}
 	}
 
@@ -249,7 +306,7 @@ func buildInitContainers(instance *openclawv1alpha1.OpenClawInstance) []corev1.C
 	}
 
 	// Config volume mount (only if config exists)
-	if configMapKey(instance) != "" {
+	if configSourceKey(instance) != "" {
 		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/config"})
 	}
 
@@ -266,15 +323,8 @@ func buildInitContainers(instance *openclawv1alpha1.OpenClawInstance) []corev1.C
 			ImagePullPolicy:          corev1.PullIfNotPresent,
 			TerminationMessagePath:   corev1.TerminationMessagePathDefault,
 			TerminationMessagePolicy: corev1.TerminationMessageReadFile,
-			SecurityContext: &corev1.SecurityContext{
-				AllowPrivilegeEscalation: Ptr(false),
-				ReadOnlyRootFilesystem:   Ptr(true),
-				RunAsNonRoot:             Ptr(true),
-				Capabilities: &corev1.Capabilities{
-					Drop: []corev1.Capability{"ALL"},
-				},
-			},
-			VolumeMounts: mounts,
+			SecurityContext:          buildInitSecurityContext(instance),
+			VolumeMounts:             mounts,
 		},
 	}
 }
@@ -287,7 +337,7 @@ func BuildInitScript(instance *openclawv1alpha1.OpenClawInstance) string {
 	var lines []string
 
 	// 1. Config copy (always overwrite — operator-managed)
-	if key := configMapKey(instance); key != "" {
+	if key := configSourceKey(instance); key != "" {
 		lines = append(lines, fmt.Sprintf("cp /config/%s /data/openclaw.json", key))
 	}
 
@@ -329,8 +379,15 @@ func hasWorkspaceFiles(instance *openclawv1alpha1.OpenClawInstance) bool {
 	return instance.Spec.Workspace != nil && len(instance.Spec.Workspace.InitialFiles) > 0
 }
 
-// configMapKey returns the ConfigMap key for the config file, or "" if no config is set.
-func configMapKey(instance *openclawv1alpha1.OpenClawInstance) string {
+// configSourceKey returns the key for the config file from ConfigMap, Secret, or Raw config.
+// Returns "" if no config is set.
+func configSourceKey(instance *openclawv1alpha1.OpenClawInstance) string {
+	if instance.Spec.Config.SecretRef != nil {
+		if instance.Spec.Config.SecretRef.Key != "" {
+			return instance.Spec.Config.SecretRef.Key
+		}
+		return "openclaw.json"
+	}
 	if instance.Spec.Config.ConfigMapRef != nil {
 		if instance.Spec.Config.ConfigMapRef.Key != "" {
 			return instance.Spec.Config.ConfigMapRef.Key
@@ -429,7 +486,17 @@ func buildVolumes(instance *openclawv1alpha1.OpenClawInstance) []corev1.Volume {
 
 	// Config volume
 	defaultMode := int32(0o644)
-	if instance.Spec.Config.ConfigMapRef != nil {
+	if instance.Spec.Config.SecretRef != nil {
+		volumes = append(volumes, corev1.Volume{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  instance.Spec.Config.SecretRef.Name,
+					DefaultMode: &defaultMode,
+				},
+			},
+		})
+	} else if instance.Spec.Config.ConfigMapRef != nil {
 		volumes = append(volumes, corev1.Volume{
 			Name: "config",
 			VolumeSource: corev1.VolumeSource{
@@ -576,8 +643,8 @@ func buildLivenessProbe(instance *openclawv1alpha1.OpenClawInstance) *corev1.Pro
 
 	probe := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
-			TCPSocket: &corev1.TCPSocketAction{
-				Port: intstr.FromInt(GatewayPort),
+			Exec: &corev1.ExecAction{
+				Command: []string{"wget", "--spider", "-q", "-T", "2", fmt.Sprintf("http://127.0.0.1:%d/", GatewayPort)},
 			},
 		},
 		InitialDelaySeconds: 30,
@@ -614,8 +681,8 @@ func buildReadinessProbe(instance *openclawv1alpha1.OpenClawInstance) *corev1.Pr
 
 	probe := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
-			TCPSocket: &corev1.TCPSocketAction{
-				Port: intstr.FromInt(GatewayPort),
+			Exec: &corev1.ExecAction{
+				Command: []string{"wget", "--spider", "-q", "-T", "2", fmt.Sprintf("http://127.0.0.1:%d/", GatewayPort)},
 			},
 		},
 		InitialDelaySeconds: 5,
@@ -652,8 +719,8 @@ func buildStartupProbe(instance *openclawv1alpha1.OpenClawInstance) *corev1.Prob
 
 	probe := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
-			TCPSocket: &corev1.TCPSocketAction{
-				Port: intstr.FromInt(GatewayPort),
+			Exec: &corev1.ExecAction{
+				Command: []string{"wget", "--spider", "-q", "-T", "2", fmt.Sprintf("http://127.0.0.1:%d/", GatewayPort)},
 			},
 		},
 		InitialDelaySeconds: 0,

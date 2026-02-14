@@ -19,6 +19,7 @@ package resources
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -368,11 +369,12 @@ func TestBuildStatefulSet_Defaults(t *testing.T) {
 	}
 
 	// Liveness probe defaults
-	if main.LivenessProbe.TCPSocket == nil {
-		t.Fatal("liveness probe should use TCPSocket")
+	if main.LivenessProbe.Exec == nil {
+		t.Fatal("liveness probe should use Exec")
 	}
-	if main.LivenessProbe.TCPSocket.Port.IntValue() != GatewayPort {
-		t.Errorf("liveness probe port = %d, want %d", main.LivenessProbe.TCPSocket.Port.IntValue(), GatewayPort)
+	expectedCmd := fmt.Sprintf("http://127.0.0.1:%d/", GatewayPort)
+	if len(main.LivenessProbe.Exec.Command) == 0 || main.LivenessProbe.Exec.Command[len(main.LivenessProbe.Exec.Command)-1] != expectedCmd {
+		t.Errorf("liveness probe command should target %s", expectedCmd)
 	}
 	if main.LivenessProbe.InitialDelaySeconds != 30 {
 		t.Errorf("liveness probe initialDelaySeconds = %d, want 30", main.LivenessProbe.InitialDelaySeconds)
@@ -762,6 +764,88 @@ func TestBuildStatefulSet_ConfigMapRef_DefaultKey(t *testing.T) {
 	expectedCmd := "cp /config/openclaw.json /data/openclaw.json"
 	if initContainers[0].Command[2] != expectedCmd {
 		t.Errorf("init container command = %q, want %q", initContainers[0].Command[2], expectedCmd)
+	}
+}
+
+func TestBuildStatefulSet_ConfigVolume_SecretRef(t *testing.T) {
+	instance := newTestInstance("secret-cfg")
+	instance.Spec.Config.SecretRef = &openclawv1alpha1.SecretKeySelector{
+		Name: "my-secret",
+		Key:  "config.json",
+	}
+
+	sts := BuildStatefulSet(instance)
+
+	// Init container should copy the custom key from Secret to data volume
+	initContainers := sts.Spec.Template.Spec.InitContainers
+	if len(initContainers) != 1 {
+		t.Fatalf("expected 1 init container, got %d", len(initContainers))
+	}
+	initC := initContainers[0]
+	assertVolumeMount(t, initC.VolumeMounts, "data", "/data")
+	assertVolumeMount(t, initC.VolumeMounts, "config", "/config")
+
+	// Verify the command copies the custom key
+	expectedCmd := "cp /config/config.json /data/openclaw.json"
+	if len(initC.Command) != 3 || initC.Command[2] != expectedCmd {
+		t.Errorf("init container command = %v, want sh -c %q", initC.Command, expectedCmd)
+	}
+
+	// Volume should reference the Secret
+	volumes := sts.Spec.Template.Spec.Volumes
+	cfgVol := findVolume(volumes, "config")
+	if cfgVol == nil {
+		t.Fatal("config volume not found")
+	}
+	if cfgVol.Secret == nil {
+		t.Fatal("config volume should use Secret")
+	}
+	if cfgVol.Secret.SecretName != "my-secret" {
+		t.Errorf("config volume secret name = %q, want %q", cfgVol.Secret.SecretName, "my-secret")
+	}
+}
+
+func TestBuildStatefulSet_SecretRef_DefaultKey(t *testing.T) {
+	instance := newTestInstance("secret-default-key")
+	instance.Spec.Config.SecretRef = &openclawv1alpha1.SecretKeySelector{
+		Name: "my-secret",
+		// Key not set - should default to "openclaw.json"
+	}
+
+	sts := BuildStatefulSet(instance)
+
+	initContainers := sts.Spec.Template.Spec.InitContainers
+	if len(initContainers) != 1 {
+		t.Fatalf("expected 1 init container, got %d", len(initContainers))
+	}
+	expectedCmd := "cp /config/openclaw.json /data/openclaw.json"
+	if initContainers[0].Command[2] != expectedCmd {
+		t.Errorf("init container command = %q, want %q", initContainers[0].Command[2], expectedCmd)
+	}
+}
+
+func TestBuildStatefulSet_SecretRef_TakesPriority(t *testing.T) {
+	instance := newTestInstance("secret-priority")
+	instance.Spec.Config.SecretRef = &openclawv1alpha1.SecretKeySelector{
+		Name: "my-secret",
+	}
+	instance.Spec.Config.ConfigMapRef = &openclawv1alpha1.ConfigMapKeySelector{
+		Name: "my-configmap",
+	}
+
+	sts := BuildStatefulSet(instance)
+
+	// SecretRef should take priority over ConfigMapRef
+	volumes := sts.Spec.Template.Spec.Volumes
+	cfgVol := findVolume(volumes, "config")
+	if cfgVol == nil {
+		t.Fatal("config volume not found")
+	}
+	if cfgVol.Secret == nil {
+		t.Fatal("config volume should use Secret when SecretRef is set")
+	}
+	if cfgVol.ConfigMap != nil {
+		t.Error("config volume should not use ConfigMap when SecretRef is set")
 	}
 }
 
@@ -1427,13 +1511,18 @@ func TestBuildConfigMap_Default(t *testing.T) {
 		t.Error("configmap missing app label")
 	}
 
-	// Default config should be empty JSON object
+	// Default config should include gateway.bind=lan for K8s networking
 	content, ok := cm.Data["openclaw.json"]
 	if !ok {
 		t.Fatal("configmap missing openclaw.json key")
 	}
-	if content != "{}" {
-		t.Errorf("default config content = %q, want %q", content, "{}")
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		t.Fatalf("default config is not valid JSON: %v", err)
+	}
+	gw, _ := parsed["gateway"].(map[string]interface{})
+	if gw == nil || gw["bind"] != "lan" {
+		t.Errorf("default config should have gateway.bind=lan, got %v", parsed)
 	}
 }
 
@@ -1476,10 +1565,17 @@ func TestBuildConfigMap_InvalidJSON_RawPreserved(t *testing.T) {
 	cm := BuildConfigMap(instance)
 	content := cm.Data["openclaw.json"]
 
-	// Pretty-printed version of {"key":"value"}
-	expected := "{\n  \"key\": \"value\"\n}"
-	if content != expected {
-		t.Errorf("config content = %q, want %q", content, expected)
+	// Should contain original key plus injected gateway config
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
+	}
+	if parsed["key"] != "value" {
+		t.Errorf("config should preserve raw key, got %v", parsed)
+	}
+	gw, _ := parsed["gateway"].(map[string]interface{})
+	if gw == nil || gw["bind"] != "lan" {
+		t.Errorf("config should have gateway.bind=lan, got %v", parsed)
 	}
 }
 

@@ -1113,9 +1113,26 @@ spec:
                     type: object
                   raw:
                     description: Raw is inline openclaw.json configuration (used if
-                      ConfigMapRef is not set)
+                      ConfigMapRef and SecretRef are not set)
                     type: object
                     x-kubernetes-preserve-unknown-fields: true
+                  secretRef:
+                    description: |-
+                      SecretRef references a Secret containing the openclaw.json configuration.
+                      Use this instead of ConfigMapRef when the config contains sensitive data.
+                      Note: when using SecretRef the operator cannot enrich the config automatically
+                      (e.g. gateway.bind), so you must include "gateway": {"bind": "lan"} yourself.
+                    properties:
+                      key:
+                        default: openclaw.json
+                        description: Key in the Secret to use
+                        type: string
+                      name:
+                        description: Name of the Secret
+                        type: string
+                    required:
+                    - name
+                    type: object
                 type: object
               env:
                 description: Env is a list of environment variables to set in the
@@ -1620,7 +1637,6 @@ spec:
                       attributes
                     properties:
                       allowPrivilegeEscalation:
-                        default: false
                         description: AllowPrivilegeEscalation controls whether a process
                           can gain more privileges
                         type: boolean
@@ -1645,11 +1661,19 @@ spec:
                             x-kubernetes-list-type: atomic
                         type: object
                       readOnlyRootFilesystem:
-                        default: false
                         description: |-
                           ReadOnlyRootFilesystem mounts the container's root filesystem as read-only
                           Note: OpenClaw requires write access to ~/.openclaw/, so this is false by default
                         type: boolean
+                      runAsNonRoot:
+                        description: RunAsNonRoot indicates that the container must
+                          run as a non-root user
+                        type: boolean
+                      runAsUser:
+                        description: RunAsUser is the UID to run the entrypoint of
+                          the container process
+                        format: int64
+                        type: integer
                     type: object
                   networkPolicy:
                     description: NetworkPolicy configures network isolation
@@ -1878,24 +1902,20 @@ spec:
                     description: PodSecurityContext holds pod-level security attributes
                     properties:
                       fsGroup:
-                        default: 1000
                         description: FSGroup is a special supplemental group that
                           applies to all containers
                         format: int64
                         type: integer
                       runAsGroup:
-                        default: 1000
                         description: RunAsGroup is the GID to run the entrypoint of
                           the container process
                         format: int64
                         type: integer
                       runAsNonRoot:
-                        default: true
                         description: RunAsNonRoot indicates that the container must
                           run as a non-root user
                         type: boolean
                       runAsUser:
-                        default: 1000
                         description: RunAsUser is the UID to run the entrypoint of
                           the container process
                         format: int64
@@ -1945,6 +1965,12 @@ spec:
                           Only used if CreateServiceAccount is false
                         type: string
                     type: object
+                  runAsRoot:
+                    description: |-
+                      RunAsRoot runs the container as root (UID 0). This is required when
+                      using OpenClaw's built-in store to install system packages.
+                      When true, sets runAsUser=0, runAsGroup=0, fsGroup=0, runAsNonRoot=false.
+                    type: boolean
                 type: object
               sidecarVolumes:
                 description: SidecarVolumes is a list of additional volumes to make

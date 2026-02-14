@@ -126,9 +126,9 @@ func (v *OpenClawInstanceValidator) validate(instance *openclawv1alpha1.OpenClaw
 		warnings = append(warnings, "allowPrivilegeEscalation is enabled - this is a security risk")
 	}
 
-	// 8. Validate resource limits are set (recommended)
-	if instance.Spec.Resources.Limits.CPU == "" || instance.Spec.Resources.Limits.Memory == "" {
-		warnings = append(warnings, "Resource limits are not fully configured - consider setting both CPU and memory limits")
+	// 8. Validate memory limit is set (recommended); CPU limit is intentionally optional
+	if instance.Spec.Resources.Limits.Memory == "" {
+		warnings = append(warnings, "Memory limit is not configured - consider setting a memory limit")
 	}
 
 	// 9. Validate workspace spec
@@ -244,9 +244,6 @@ func (d *OpenClawInstanceDefaulter) Default(ctx context.Context, obj runtime.Obj
 	}
 	if instance.Spec.Resources.Requests.Memory == "" {
 		instance.Spec.Resources.Requests.Memory = "1Gi"
-	}
-	if instance.Spec.Resources.Limits.CPU == "" {
-		instance.Spec.Resources.Limits.CPU = "2000m"
 	}
 	if instance.Spec.Resources.Limits.Memory == "" {
 		instance.Spec.Resources.Limits.Memory = "4Gi"

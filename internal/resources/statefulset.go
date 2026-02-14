@@ -518,11 +518,9 @@ func buildResourceRequirements(instance *openclawv1alpha1.OpenClawInstance) core
 	req.Requests[corev1.ResourceMemory] = resource.MustParse(memReq)
 
 	// Limits
-	cpuLim := instance.Spec.Resources.Limits.CPU
-	if cpuLim == "" {
-		cpuLim = "2000m"
+	if cpuLim := instance.Spec.Resources.Limits.CPU; cpuLim != "" {
+		req.Limits[corev1.ResourceCPU] = resource.MustParse(cpuLim)
 	}
-	req.Limits[corev1.ResourceCPU] = resource.MustParse(cpuLim)
 
 	memLim := instance.Spec.Resources.Limits.Memory
 	if memLim == "" {

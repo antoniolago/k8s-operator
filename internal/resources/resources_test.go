@@ -348,9 +348,8 @@ func TestBuildStatefulSet_Defaults(t *testing.T) {
 	if memReq.Cmp(resource.MustParse("1Gi")) != 0 {
 		t.Errorf("memory request = %v, want 1Gi", memReq.String())
 	}
-	cpuLim := main.Resources.Limits[corev1.ResourceCPU]
-	if cpuLim.String() != "2" {
-		t.Errorf("cpu limit = %v, want 2 (2000m)", cpuLim.String())
+	if _, hasCPULim := main.Resources.Limits[corev1.ResourceCPU]; hasCPULim {
+		t.Error("cpu limit should not be set by default (intentionally omitted)")
 	}
 	memLim := main.Resources.Limits[corev1.ResourceMemory]
 	if memLim.Cmp(resource.MustParse("4Gi")) != 0 {
